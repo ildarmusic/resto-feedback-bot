@@ -26,8 +26,17 @@ import sheets
 # Явно грузим .env (стабильнее на Python 3.13)
 load_dotenv(dotenv_path=".env")
 
+def _admin_ids() -> set[int]:
+    raw = os.getenv("ADMIN_IDS", "").strip()
+    if not raw:
+        return set()
+    return {int(x.strip()) for x in raw.split(",") if x.strip().isdigit()}
+
+def _is_admin(update: Update) -> bool:
+    return update.effective_user and update.effective_user.id in _admin_ids()
+
 # Состояния диалога (дату больше не спрашиваем)
-DISH, COMMENT, REPLY, EDIT_REPLY = range(4)
+DISH, COMMENT, REPLY, EDIT_REPLY, BULK_DISHES = range(5)
 
 # Постоянная кнопка внизу чата
 MAIN_MENU = ReplyKeyboardMarkup([["➕ Новая запись"]], resize_keyboard=True)
@@ -60,6 +69,70 @@ def card_keyboard(fid: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton("✏️ Добавить/Редактировать ответ кухни", callback_data=f"edit:{fid}")]]
     )
+
+async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Ваш user_id: {update.effective_user.id}")
+
+
+async def dadd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        return await update.message.reply_text("Недостаточно прав.")
+
+    name = " ".join(context.args).strip()
+    if not name:
+        return await update.message.reply_text("Использование: /dadd Название блюда")
+
+    db: DB = context.application.bot_data["db"]
+    await db.upsert_dish(name)
+    await update.message.reply_text(f"✅ Добавил: {name}", reply_markup=MAIN_MENU)
+
+async def dbulk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        return await update.message.reply_text("Недостаточно прав.")
+    await update.message.reply_text(
+        "Отправьте одним сообщением список блюд (по одному в строке).",
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    return BULK_DISHES
+
+async def dbulk_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        return ConversationHandler.END
+
+    text = (update.message.text or "").strip()
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        await update.message.reply_text("Пусто. Пришлите список блюд строками.")
+        return BULK_DISHES
+
+    db: DB = context.application.bot_data["db"]
+    added = 0
+    for name in lines:
+        await db.upsert_dish(name)
+        added += 1
+
+    await update.message.reply_text(f"✅ Импортировал блюд: {added}", reply_markup=MAIN_MENU)
+    return ConversationHandler.END
+
+async def dlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        return await update.message.reply_text("Недостаточно прав.")
+    db: DB = context.application.bot_data["db"]
+    # простой подсчёт
+    row = await db.pool.fetchrow("SELECT COUNT(*) AS c FROM dishes")  # type: ignore
+    await update.message.reply_text(f"🍽 Блюд в базе: {row['c']}", reply_markup=MAIN_MENU)
+
+async def ddel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        return await update.message.reply_text("Недостаточно прав.")
+
+    name = " ".join(context.args).strip()
+    if not name:
+        return await update.message.reply_text("Использование: /ddel Название блюда")
+
+    db: DB = context.application.bot_data["db"]
+    await db.pool.execute("DELETE FROM dishes WHERE name=$1", name)  # type: ignore
+    await update.message.reply_text(f"🗑 Удалил (если было): {name}", reply_markup=MAIN_MENU)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -266,8 +339,20 @@ def main():
         per_message=True,
     )
 
+bulk_conv = ConversationHandler(
+    entry_points=[CommandHandler("dbulk", dbulk)],
+    states={BULK_DISHES: [MessageHandler(filters.TEXT & ~filters.COMMAND, dbulk_receive)]},
+    fallbacks=[CommandHandler("cancel", cancel)],
+    allow_reentry=True,
+)
+
+    app.add_handler(bulk_conv)
+    app.add_handler(CommandHandler("whoami", whoami))
     app.add_handler(new_conv)
     app.add_handler(edit_conv)
+    app.add_handler(CommandHandler("dadd", dadd))
+    app.add_handler(CommandHandler("dlist", dlist))
+    app.add_handler(CommandHandler("ddel", ddel))
 
     # Кнопка меню "➕ Новая запись" (без команд)
     app.add_handler(MessageHandler(filters.Regex(r"^➕ Новая запись$"), new_from_button))
