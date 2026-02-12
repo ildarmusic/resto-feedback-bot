@@ -6,7 +6,8 @@ from db import DB
 load_dotenv(dotenv_path=".env")
 
 async def main():
-    db = DB(os.environ["DATABASE_URL"])
+    dsn = os.environ["postgresql://postgres:iRHmmepUJRBAYigcRGgYDVZgUqMsazIN@postgres.railway.internal:5432/railway"]
+    db = DB(dsn)
     await db.connect()
 
     added = 0
@@ -19,6 +20,6 @@ async def main():
             added += 1
 
     await db.close()
-    print(f"Imported {added} dishes.")
+    print(f"Imported {added} dishes")
 
 asyncio.run(main())
