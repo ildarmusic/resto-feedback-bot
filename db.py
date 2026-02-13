@@ -35,15 +35,25 @@ class DB:
         if self.pool:
             await self.pool.close()
 
-    async def search_dishes(self, prefix: str, limit: int = 10) -> list[str]:
-        assert self.pool
-        q = """
-        SELECT name FROM dishes
-        WHERE name ILIKE $1
-        ORDER BY name
-        LIMIT $2
+    async def search_dishes(self, query: str, limit: int = 10) -> list[str]:
+        q = " ".join(query.strip().split())
+        if len(q) < 2:
+            return []
+
+        parts = [p for p in q.split(" ") if p]
+        # Собираем WHERE: name ILIKE $1 AND name ILIKE $2 ...
+        conds = " AND ".join([f"name ILIKE ${i+1}" for i in range(len(parts))])
+        params = [f"%{p}%" for p in parts] + [limit]
+
+        sql = f"""
+            SELECT name
+            FROM dishes
+            WHERE {conds}
+            ORDER BY name
+            LIMIT ${len(parts)+1}
         """
-        rows = await self.pool.fetch(q, prefix + "%", limit)
+
+        rows = await self.pool.fetch(sql, *params)
         return [r["name"] for r in rows]
 
     async def upsert_dish(self, name: str):
