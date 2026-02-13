@@ -145,7 +145,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["date_str"] = msg_date.strftime("%d/%m/%y")
 
     await update.message.reply_text(
-        "Записываем ОС.\n\n1) Введите 2+ буквы названия блюда (будут подсказки):",
+        "Записываем ОС.\n\n1) Введи слово или буквы из названия блюда (появятся кнопки с вариантами):",
         reply_markup=ReplyKeyboardRemove(),
     )
     return DISH
