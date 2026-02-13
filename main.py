@@ -339,12 +339,12 @@ def main():
         per_message=True,
     )
 
-bulk_conv = ConversationHandler(
+    bulk_conv = ConversationHandler(
     entry_points=[CommandHandler("dbulk", dbulk)],
     states={BULK_DISHES: [MessageHandler(filters.TEXT & ~filters.COMMAND, dbulk_receive)]},
     fallbacks=[CommandHandler("cancel", cancel)],
     allow_reentry=True,
-)
+    )
 
     app.add_handler(bulk_conv)
     app.add_handler(CommandHandler("whoami", whoami))
