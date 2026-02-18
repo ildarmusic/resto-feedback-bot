@@ -1,4 +1,3 @@
-cat > main.py << 'EOF'
 import os
 import asyncio
 from datetime import datetime
@@ -454,5 +453,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-EOF
 
