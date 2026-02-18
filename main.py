@@ -38,13 +38,115 @@ def _is_admin(update: Update) -> bool:
     return bool(update.effective_user and update.effective_user.id in _admin_ids())
 
 
+# ---------- Group helpers ----------
+def _group_chat_id() -> int | None:
+    raw = (os.getenv("GROUP_CHAT_ID") or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def group_text(fid: int, date_str: str, dish: str, comment: str, reply: str) -> str:
+    # В группу — без кнопок, только финальный текст
+    return (
+        f"🧾 ОС #{fid}\n"
+        f"📅 {date_str}\n"
+        f"🍽 {dish}\n\n"
+        f"💬 Комментарий гостя:\n{comment}\n\n"
+        f"👨‍🍳 Ответ кухни:\n{reply}"
+    )
+
+
+def _row_get(row, key: str, default=None):
+    try:
+        return row[key]
+    except Exception:
+        return default
+
+
+async def _set_group_message_refs(db: DB, fid: int, chat_id: int, message_id: int):
+    """
+    Пытаемся сохранить group_chat_id/group_message_id в БД.
+    1) если у DB есть метод set_group_message_refs — используем
+    2) иначе пытаемся обновить SQL-ом (нужны колонки group_chat_id, group_message_id)
+    """
+    if hasattr(db, "set_group_message_refs"):
+        await getattr(db, "set_group_message_refs")(fid, chat_id, message_id)
+        return
+
+    # Fallback SQL (если у тебя нет метода, но есть колонки)
+    try:
+        await db.pool.execute(  # type: ignore
+            "UPDATE feedback SET group_chat_id=$2, group_message_id=$3 WHERE id=$1",
+            fid,
+            chat_id,
+            message_id,
+        )
+    except Exception:
+        # если нет колонок — просто молча не сохраним (но тогда удаление в группе работать не сможет)
+        pass
+
+
+async def _publish_or_update_group(
+    context: ContextTypes.DEFAULT_TYPE,
+    db: DB,
+    fid: int,
+    date_str: str,
+    dish: str,
+    comment: str,
+    reply: str,
+):
+    gid = _group_chat_id()
+    if not gid:
+        return
+
+    row = await db.get_feedback(fid)
+    if not row:
+        return
+
+    g_chat_id = _row_get(row, "group_chat_id", None)
+    g_msg_id = _row_get(row, "group_message_id", None)
+
+    text = group_text(fid, date_str, dish, comment, reply)
+
+    if g_chat_id and g_msg_id:
+        # Уже публиковали — обновляем
+        try:
+            await context.bot.edit_message_text(
+                chat_id=int(g_chat_id),
+                message_id=int(g_msg_id),
+                text=text,
+                disable_web_page_preview=True,
+            )
+            return
+        except Exception:
+            # если не получилось отредактировать — попробуем отправить заново
+            pass
+
+    # Ещё не публиковали — отправляем новое сообщение
+    try:
+        gmsg = await context.bot.send_message(
+            chat_id=gid,
+            text=text,
+            disable_web_page_preview=True,
+        )
+        await _set_group_message_refs(db, fid, gmsg.chat_id, gmsg.message_id)
+    except Exception:
+        pass
+
+
+async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"chat_id: {update.effective_chat.id}")
+
+
 # ---------- Conversation states ----------
-# Добавили DISH_CONFIRM_NEW, чтобы не принимать “новое блюдо” без подтверждения
 DISH, DISH_CONFIRM_NEW, COMMENT, REPLY, EDIT_REPLY, BULK_DISHES = range(6)
 
 
 # ---------- Cleanup helpers ----------
-# Мы трекаем все промежуточные сообщения (и ваши, и бота), чтобы потом удалить.
 def _cleanup_list(context: ContextTypes.DEFAULT_TYPE) -> list[tuple[int, int]]:
     return context.user_data.setdefault("cleanup_ids", [])
 
@@ -58,12 +160,7 @@ async def _track_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         _track(context, update.message.chat_id, update.message.message_id)
 
 
-async def _send_tracked(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    text: str,
-    **kwargs,
-):
+async def _send_tracked(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, **kwargs):
     msg = await context.bot.send_message(chat_id=update.effective_chat.id, text=text, **kwargs)
     _track(context, msg.chat_id, msg.message_id)
     return msg
@@ -134,31 +231,22 @@ def _set_auto_date(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def _norm(s: str) -> str:
-    # нормализация: пробелы, регистр, ё->е
     s = " ".join((s or "").strip().split()).lower()
     s = s.replace("ё", "е")
     return s
 
 
 async def search_dishes_strict(db: DB, query: str, limit: int = 10) -> list[str]:
-    """
-    Очень тщательный поиск:
-    1) пробуем db.search_dishes(query)
-    2) если пусто — ищем по каждому слову (AND) через SQL LIKE %word%
-    3) если всё равно пусто — fallback по первому слову
-    """
     q = _norm(query)
     if len(q) < 2:
         return []
 
     opts: list[str] = []
-    # 1) базовый поиск через твой метод
     try:
         opts = await db.search_dishes(q, limit=limit)
     except Exception:
         opts = []
 
-    # 2) по словам (AND), если ничего не нашли
     if not opts:
         parts = [p for p in q.split(" ") if len(p) >= 2]
         if parts:
@@ -174,7 +262,6 @@ async def search_dishes_strict(db: DB, query: str, limit: int = 10) -> list[str]
             rows = await db.pool.fetch(sql, *params)  # type: ignore
             opts = [r["name"] for r in rows]
 
-    # 3) fallback по первому слову
     if not opts:
         first = q.split(" ")[0]
         if len(first) >= 2:
@@ -191,7 +278,6 @@ async def search_dishes_strict(db: DB, query: str, limit: int = 10) -> list[str]
             )  # type: ignore
             opts = [r["name"] for r in rows]
 
-    # уникализируем, сохраняем порядок
     seen = set()
     uniq: list[str] = []
     for x in opts:
@@ -209,10 +295,13 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /start или /new — начать новую запись\n"
         "• /skip — пропустить ответ кухни\n"
         "• /cancel — отменить текущий шаг\n\n"
+        "Группа:\n"
+        "• В группу уходит только запись с ответом кухни\n"
+        "• /chatid — узнать chat_id (удобно для GROUP_CHAT_ID)\n\n"
         "На карточке:\n"
         "• ✏️ Ответ кухни — добавить/изменить позже\n"
         "• ➕ Новая запись — начать следующую\n"
-        "• 🗑 Удалить запись — удалить из базы и таблицы\n\n"
+        "• 🗑 Удалить запись — удалит и в группе тоже (если публиковалось)\n\n"
         "🍽 Блюда (для админов):\n"
         "• /dbulk — загрузить список блюд (по одному в строке)\n"
         "• /dadd Название — добавить блюдо\n"
@@ -296,7 +385,6 @@ async def dbulk_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- Main flow ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _set_auto_date(context)
-
     await _track_user_message(update, context)
     await _send_tracked(
         update,
@@ -310,10 +398,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-
     context.user_data["cleanup_ids"] = []
     _set_auto_date(context)
-
     await _send_tracked(
         update,
         context,
@@ -326,10 +412,8 @@ async def start_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def get_dish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db: DB = context.application.bot_data["db"]
     text_raw = (update.message.text or "").strip()
-
     await _track_user_message(update, context)
 
-    # если человек нажал кнопки подтверждения “новое блюдо” не в том шаге — мягко вернём
     if text_raw in ("➕ Добавить как новое", "🔎 Попробовать ещё раз"):
         await _send_tracked(update, context, "Введите слово/буквы из названия блюда:", reply_markup=ReplyKeyboardRemove())
         return DISH
@@ -339,11 +423,8 @@ async def get_dish(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _send_tracked(update, context, "Нужно минимум 2 символа. Повторите:")
         return DISH
 
-    # Тщательный поиск
     options = await search_dishes_strict(db, q, limit=10)
 
-    # Если совпадения есть — ВСЕГДА показываем варианты и НЕ пропускаем дальше,
-    # пока не будет точного совпадения (или выбора)
     if options:
         for o in options:
             if _norm(o) == q:
@@ -359,7 +440,6 @@ async def get_dish(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return DISH
 
-    # Совпадений нет — НЕ принимаем молча как новое, просим подтверждение
     context.user_data["pending_dish"] = text_raw
     await _send_tracked(
         update,
@@ -432,6 +512,7 @@ async def finalize(update: Update, context: ContextTypes.DEFAULT_TYPE, kitchen_r
     await db.upsert_dish(dish)
     fid = await db.create_feedback(date_obj, dish, comment, kitchen_reply)
 
+    # Личная карточка (с кнопками)
     msg = await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text=card_text(fid, date_str, dish, comment, kitchen_reply),
@@ -439,7 +520,12 @@ async def finalize(update: Update, context: ContextTypes.DEFAULT_TYPE, kitchen_r
     )
     await db.set_message_refs(fid, msg.chat_id, msg.message_id)
 
+    # Sheets
     await asyncio.to_thread(sheets.append_feedback_row, fid, date_str, dish, comment, kitchen_reply)
+
+    # В группу — ТОЛЬКО если есть ответ кухни
+    if kitchen_reply:
+        await _publish_or_update_group(context, db, fid, date_str, dish, comment, kitchen_reply)
 
     await _cleanup_messages(context)
     context.user_data.clear()
@@ -488,6 +574,7 @@ async def save_edited_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = row["telegram_chat_id"]
     message_id = row["telegram_message_id"]
 
+    # Обновляем личную карточку
     await context.bot.edit_message_text(
         chat_id=chat_id,
         message_id=message_id,
@@ -495,7 +582,12 @@ async def save_edited_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=card_keyboard(fid),
     )
 
+    # Обновляем Google Sheets
     await asyncio.to_thread(sheets.update_feedback_row, fid, date_str, dish, comment, reply)
+
+    # Публикуем/обновляем в группе (теперь уже точно есть ответ кухни)
+    if reply:
+        await _publish_or_update_group(context, db, fid, date_str, dish, comment, reply)
 
     await _cleanup_messages(context)
     context.user_data.clear()
@@ -516,7 +608,6 @@ async def on_delete_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     fid = int(q.data.split(":", 1)[1])
-
     await q.message.reply_text(
         f"Удалить запись ОС #{fid}?",
         reply_markup=delete_confirm_keyboard(fid),
@@ -549,22 +640,32 @@ async def on_delete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not row:
         return
 
-    chat_id = row["telegram_chat_id"]
-    message_id = row["telegram_message_id"]
+    private_chat_id = row["telegram_chat_id"]
+    private_message_id = row["telegram_message_id"]
 
-    # 2) Удаляем карточку
+    group_chat_id = _row_get(row, "group_chat_id", None)
+    group_message_id = _row_get(row, "group_message_id", None)
+
+    # 2) Удаляем карточку в личке
     try:
-        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        await context.bot.delete_message(chat_id=private_chat_id, message_id=private_message_id)
     except Exception:
         pass
 
-    # 3) Удаляем строку в Sheets
+    # 3) Удаляем сообщение в группе (если было)
+    if group_chat_id and group_message_id:
+        try:
+            await context.bot.delete_message(chat_id=int(group_chat_id), message_id=int(group_message_id))
+        except Exception:
+            pass
+
+    # 4) Удаляем строку в Sheets
     try:
         await asyncio.to_thread(sheets.delete_feedback_row, fid)
     except Exception:
         pass
 
-    # 4) Удаляем из БД (последним)
+    # 5) Удаляем из БД (последним)
     await db.delete_feedback(fid)
 
 
@@ -633,6 +734,8 @@ def main():
 
     app.add_handler(CallbackQueryHandler(help_from_button, pattern=r"^help$"))
     app.add_handler(CommandHandler("help", help_cmd))
+
+    app.add_handler(CommandHandler("chatid", chatid))
 
     app.add_handler(CommandHandler("whoami", whoami))
     app.add_handler(CommandHandler("dadd", dadd))
