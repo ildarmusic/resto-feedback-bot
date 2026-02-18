@@ -24,12 +24,41 @@ def append_feedback_row(feedback_id: int, date_str: str, dish: str, guest_commen
         value_input_option="USER_ENTERED",
     )
 
-def update_feedback_row(feedback_id: int, date_str: str, dish: str, guest_comment: str, kitchen_reply: str | None):
+def update_feedback_row(fid: int, date_str: str, dish: str, comment: str, reply: str | None):
     ws = _ws()
-    cell = ws.find(str(feedback_id))   # ищем ID в таблице
-    row = cell.row
-    ws.update(
-        f"A{row}:E{row}",
-        [[str(feedback_id), date_str, dish, guest_comment, kitchen_reply or ""]],
-        value_input_option="USER_ENTERED",
+
+    target = str(fid).strip()
+
+    # Берём весь столбец A (ID)
+    col = ws.col_values(1)  # список строк, включая заголовок
+    row_idx = None
+
+    def norm(x: str) -> str:
+        x = (x or "").strip()
+        # если Google Sheets вернул "123.0"
+        if x.endswith(".0") and x.replace(".0", "").isdigit():
+            x = x[:-2]
+        return x
+
+    for i, v in enumerate(col, start=1):
+        if norm(v) == target:
+            row_idx = i
+            break
+
+    values = [
+        str(fid),
+        date_str,
+        dish,
+        comment,
+        reply or "",
+    ]
+
+    if row_idx is None:
+        # Не нашли строку — НЕ теряем данные, добавляем как новую
+        ws.append_row(values, value_input_option="USER_ENTERED")
+        print(f"[sheets] WARN: row with ID={fid} not found, appended new row")
+        return
+
+    # Обновляем диапазон A:E в найденной строке
+    ws.update(f"A{row_idx}:E{row_idx}", [values], value_input_option="USER_ENTERED")
     )
