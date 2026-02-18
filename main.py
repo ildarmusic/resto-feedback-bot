@@ -123,6 +123,23 @@ def card_keyboard(fid: int) -> InlineKeyboardMarkup:
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Ваш user_id: {update.effective_user.id}")
 
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "🤖 *Помощь по боту*\n\n"
+        "📝 *Запись обратной связи*\n"
+        "• `/start` или `/new` — начать новую запись\n"
+        "• шаги: блюдо → комментарий → ответ кухни (или /skip)\n"
+        "• ✏️ *Ответ кухни* можно добавить позже кнопкой на карточке\n\n"
+        "🍽 *Блюда* (доступно админам)\n"
+        "• `/dbulk` — загрузить список блюд (по одному в строке)\n"
+        "• `/dadd Название` — добавить одно блюдо\n"
+        "• `/ddel Название` — удалить блюдо\n"
+        "• `/dlist` — сколько блюд в базе\n\n"
+        "⚙️ *Сервис*\n"
+        "• `/cancel` — отменить текущий шаг\n"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
 
 async def dadd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update):
@@ -445,6 +462,7 @@ def main():
 
     # Админ-команды
     app.add_handler(CommandHandler("whoami", whoami))
+    app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("dadd", dadd))
     app.add_handler(CommandHandler("dlist", dlist))
     app.add_handler(CommandHandler("ddel", ddel))
