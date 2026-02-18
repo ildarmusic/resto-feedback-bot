@@ -441,38 +441,32 @@ async def on_delete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db: DB = context.application.bot_data["db"]
     row = await db.get_feedback(fid)
 
+    # 1) СРАЗУ убираем сообщение подтверждения (чтобы точно не висело)
+    try:
+        await q.message.delete()
+    except Exception:
+        pass
+
     if not row:
-        try:
-            await q.message.edit_text("Запись уже удалена или не найдена.")
-        except Exception:
-            pass
         return
 
     chat_id = row["telegram_chat_id"]
     message_id = row["telegram_message_id"]
 
-    # 1) СНАЧАЛА удаляем карточку из Telegram
+    # 2) Удаляем карточку
     try:
         await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
     except Exception:
         pass
 
-    # 2) Потом удаляем из Google Sheets
+    # 3) Удаляем строку в Sheets
     try:
         await asyncio.to_thread(sheets.delete_feedback_row, fid)
-    except Exception as e:
-        await q.message.reply_text(
-            f"⚠️ Не смог удалить строку в таблице: {type(e).__name__}: {e}"
-        )
-
-    # 3) И ТОЛЬКО ПОТОМ удаляем из БД
-    await db.delete_feedback(fid)
-
-    # 4) Удаляем сообщение подтверждения
-    try:
-        await q.message.delete()
     except Exception:
         pass
+
+    # 4) Удаляем из БД (последним)
+    await db.delete_feedback(fid)
 
 
 # ---------- Lifecycle ----------
