@@ -66,6 +66,20 @@ def _row_get(row, key: str, default=None):
     except Exception:
         return default
 
+async def on_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # реагируем только в личке, чтобы не засорять группу
+    if not update.effective_chat or update.effective_chat.type != "private":
+        return
+
+    # если вдруг это сообщение уже было в процессе каких-то шагов — оно не дойдёт сюда,
+    # потому что ConversationHandler поймает его раньше (если handler добавлен после conv'ов).
+    await update.message.reply_text(
+        "Нельзя писать просто текст 🙂\nКликни на кнопку, чтобы создать новую команду)",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("➕ Новая запись", callback_data="new")]]
+        ),
+    )
+
 
 async def _set_group_message_refs(db: DB, fid: int, chat_id: int, message_id: int):
     """
@@ -745,6 +759,7 @@ def main():
 
     app.add_handler(CallbackQueryHandler(help_from_button, pattern=r"^help$"))
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_free_text))
 
     app.add_handler(CommandHandler("chatid", chatid))
 
