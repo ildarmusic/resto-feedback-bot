@@ -454,17 +454,14 @@ async def on_delete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await db.delete_feedback(fid)
 
     # 2) Sheets
-    await asyncio.to_thread(sheets.delete_feedback_row, fid)
+    try:
+        await asyncio.to_thread(sheets.delete_feedback_row, fid)
+    except Exception as e:
+        await q.message.reply_text(f"⚠️ Не смог удалить строку в таблице: {type(e).__name__}: {e}")
 
     # 3) Карточка
     try:
         await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-    except Exception:
-        pass
-
-    # 4) Сообщение подтверждения
-    try:
-        await q.message.delete()
     except Exception:
         pass
 
