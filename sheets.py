@@ -61,4 +61,4 @@ def update_feedback_row(fid: int, date_str: str, dish: str, comment: str, reply:
 
     # Обновляем диапазон A:E в найденной строке
     ws.update(f"A{row_idx}:E{row_idx}", [values], value_input_option="USER_ENTERED")
-    )
+
