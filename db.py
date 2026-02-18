@@ -40,6 +40,9 @@ class DB:
         if len(q) < 2:
             return []
 
+    async def delete_feedback(self, fid: int) -> None:
+        await self.pool.execute("DELETE FROM feedback WHERE id=$1", fid)
+
         parts = [p for p in q.split(" ") if p]
         # Собираем WHERE: name ILIKE $1 AND name ILIKE $2 ...
         conds = " AND ".join([f"name ILIKE ${i+1}" for i in range(len(parts))])

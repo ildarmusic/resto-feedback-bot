@@ -24,6 +24,30 @@ def append_feedback_row(feedback_id: int, date_str: str, dish: str, guest_commen
         value_input_option="USER_ENTERED",
     )
 
+def delete_feedback_row(fid: int):
+    ws = _ws()
+    target = str(fid).strip()
+
+    col = ws.col_values(1)  # столбец ID
+
+    def norm(x: str) -> str:
+        x = (x or "").strip()
+        if x.endswith(".0") and x.replace(".0", "").isdigit():
+            x = x[:-2]
+        return x
+
+    row_idx = None
+    for i, v in enumerate(col, start=1):
+        if norm(v) == target:
+            row_idx = i
+            break
+
+    if row_idx is None:
+        print(f"[sheets] WARN: row with ID={fid} not found, nothing to delete")
+        return
+
+    ws.delete_rows(row_idx)
+
 def update_feedback_row(fid: int, date_str: str, dish: str, comment: str, reply: str | None):
     ws = _ws()
 
