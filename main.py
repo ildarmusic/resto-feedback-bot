@@ -423,14 +423,25 @@ async def get_dish(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _send_tracked(update, context, "Нужно минимум 2 символа. Повторите:")
         return DISH
 
-    options = await search_dishes_strict(db, q, limit=10)
+    try:
+        options = await search_dishes_strict(db, q, limit=10)
+    except Exception as e:
+        await _send_tracked(
+            update,
+            context,
+            "⚠️ Сейчас не могу проверить блюда в базе (ошибка подключения). Попробуйте ещё раз.",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return DISH
 
     if options:
-        for o in options:
-            if _norm(o) == q:
-                context.user_data["dish"] = o
-                await _send_tracked(update, context, "2) Комментарий гостя:", reply_markup=ReplyKeyboardRemove())
-                return COMMENT
+        exact = [o for o in options if _norm(o) == q]
+
+        # автопринятие только если ровно 1 вариант и он точный
+        if len(options) == 1 and exact:
+            context.user_data["dish"] = exact[0]
+            await _send_tracked(update, context, "2) Комментарий гостя:", reply_markup=ReplyKeyboardRemove())
+            return COMMENT
 
         await _send_tracked(
             update,
