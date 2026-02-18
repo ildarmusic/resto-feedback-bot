@@ -405,7 +405,11 @@ def main():
 
     # Основной сценарий (создание ОС)
     new_conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start), CommandHandler("new", start)],
+        entry_points=[
+            CommandHandler("start", start),
+            CommandHandler("new", start),
+            CallbackQueryHandler(start_from_callback, pattern=r"^new$"),
+        ],
         states={
             DISH: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_dish)],
             COMMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_comment)],
@@ -438,9 +442,6 @@ def main():
     app.add_handler(new_conv)
     app.add_handler(edit_conv)
     app.add_handler(bulk_conv)
-
-    # Inline-кнопка “➕ Новая запись” на карточке
-    app.add_handler(CallbackQueryHandler(start_from_callback, pattern=r"^new$"))
 
     # Админ-команды
     app.add_handler(CommandHandler("whoami", whoami))
