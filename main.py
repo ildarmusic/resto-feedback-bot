@@ -333,13 +333,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /cancel — отменить текущий шаг\n\n"
         "Группа:\n"
         "• В группу уходит только запись с ответом кухни\n\n"
-        "Подписка/рассылка:\n"
-        "• /subscribe — подписаться (личка)\n"
-        "• /unsubscribe — отписаться\n"
-        "• /broadcast — админ-рассылка всем подписчикам\n\n"
-        "Утилиты:\n"
-        "• /chatid — узнать chat_id\n"
-        "• /whoami — ваш user_id\n"
     )
     await update.message.reply_text(txt)
 
