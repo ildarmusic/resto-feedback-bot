@@ -66,20 +66,6 @@ def _row_get(row, key: str, default=None):
     except Exception:
         return default
 
-async def on_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # реагируем только в личке, чтобы не засорять группу
-    if not update.effective_chat or update.effective_chat.type != "private":
-        return
-
-    # если вдруг это сообщение уже было в процессе каких-то шагов — оно не дойдёт сюда,
-    # потому что ConversationHandler поймает его раньше (если handler добавлен после conv'ов).
-    await update.message.reply_text(
-        "Нельзя писать просто текст 🙂\nКликни на кнопку, чтобы создать новую запись ОС)",
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("➕ Новая запись", callback_data="new")]]
-        ),
-    )
-
 
 async def _set_group_message_refs(db: DB, fid: int, chat_id: int, message_id: int):
     """
@@ -100,7 +86,7 @@ async def _set_group_message_refs(db: DB, fid: int, chat_id: int, message_id: in
             message_id,
         )
     except Exception:
-        # если нет колонок — просто молча не сохраним (но тогда удаление в группе работать не сможет)
+        # если нет колонок — просто молча не сохраним
         pass
 
 
@@ -137,7 +123,6 @@ async def _publish_or_update_group(
             )
             return
         except Exception:
-            # если не получилось отредактировать — попробуем отправить заново
             pass
 
     # Ещё не публиковали — отправляем новое сообщение
@@ -156,8 +141,39 @@ async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"chat_id: {update.effective_chat.id}")
 
 
+# ---------- Subscribe / Broadcast ----------
+async def _autoregister_subscriber(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Автоподписка только для лички.
+    В группах не подписываем (чтобы рассылка не уходила в чаты).
+    """
+    if not update.effective_chat or update.effective_chat.type != "private":
+        return
+    db: DB = context.application.bot_data["db"]
+    try:
+        await db.upsert_subscriber(update.effective_chat.id, update.effective_chat.type)
+    except Exception:
+        pass
+
+
+async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_chat or update.effective_chat.type != "private":
+        return await update.message.reply_text("Подписка работает только в личке с ботом.")
+    db: DB = context.application.bot_data["db"]
+    await db.upsert_subscriber(update.effective_chat.id, update.effective_chat.type)
+    await update.message.reply_text("✅ Вы подписаны на сообщения.")
+
+
+async def unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_chat or update.effective_chat.type != "private":
+        return await update.message.reply_text("Отписка работает только в личке с ботом.")
+    db: DB = context.application.bot_data["db"]
+    await db.remove_subscriber(update.effective_chat.id)
+    await update.message.reply_text("❌ Вы отписались от сообщений.")
+
+
 # ---------- Conversation states ----------
-DISH, DISH_CONFIRM_NEW, COMMENT, REPLY, EDIT_REPLY, BULK_DISHES = range(6)
+DISH, DISH_CONFIRM_NEW, COMMENT, REPLY, EDIT_REPLY, BULK_DISHES, BROADCAST = range(7)
 
 
 # ---------- Cleanup helpers ----------
@@ -262,35 +278,41 @@ async def search_dishes_strict(db: DB, query: str, limit: int = 10) -> list[str]
         opts = []
 
     if not opts:
-        parts = [p for p in q.split(" ") if len(p) >= 2]
-        if parts:
-            conds = " AND ".join([f"replace(lower(name),'ё','е') LIKE ${i+1}" for i in range(len(parts))])
-            params = [f"%{p}%" for p in parts] + [limit]
-            sql = f"""
-                SELECT name
-                FROM dishes
-                WHERE {conds}
-                ORDER BY name
-                LIMIT ${len(parts)+1}
-            """
-            rows = await db.pool.fetch(sql, *params)  # type: ignore
-            opts = [r["name"] for r in rows]
+        try:
+            parts = [p for p in q.split(" ") if len(p) >= 2]
+            if parts:
+                conds = " AND ".join([f"replace(lower(name),'ё','е') LIKE ${i+1}" for i in range(len(parts))])
+                params = [f"%{p}%" for p in parts] + [limit]
+                sql = f"""
+                    SELECT name
+                    FROM dishes
+                    WHERE {conds}
+                    ORDER BY name
+                    LIMIT ${len(parts)+1}
+                """
+                rows = await db.pool.fetch(sql, *params)  # type: ignore
+                opts = [r["name"] for r in rows]
+        except Exception:
+            opts = []
 
     if not opts:
-        first = q.split(" ")[0]
-        if len(first) >= 2:
-            rows = await db.pool.fetch(
-                """
-                SELECT name
-                FROM dishes
-                WHERE replace(lower(name),'ё','е') LIKE $1
-                ORDER BY name
-                LIMIT $2
-                """,
-                f"%{first}%",
-                limit,
-            )  # type: ignore
-            opts = [r["name"] for r in rows]
+        try:
+            first = q.split(" ")[0]
+            if len(first) >= 2:
+                rows = await db.pool.fetch(
+                    """
+                    SELECT name
+                    FROM dishes
+                    WHERE replace(lower(name),'ё','е') LIKE $1
+                    ORDER BY name
+                    LIMIT $2
+                    """,
+                    f"%{first}%",
+                    limit,
+                )  # type: ignore
+                opts = [r["name"] for r in rows]
+        except Exception:
+            opts = []
 
     seen = set()
     uniq: list[str] = []
@@ -310,17 +332,13 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /skip — пропустить ответ кухни\n"
         "• /cancel — отменить текущий шаг\n\n"
         "Группа:\n"
-        "• В группу уходит только запись с ответом кухни\n"
-        "• /chatid — узнать chat_id (удобно для GROUP_CHAT_ID)\n\n"
-        "На карточке:\n"
-        "• ✏️ Ответ кухни — добавить/изменить позже\n"
-        "• ➕ Новая запись — начать следующую\n"
-        "• 🗑 Удалить запись — удалит и в группе тоже (если публиковалось)\n\n"
-        "🍽 Блюда (для админов):\n"
-        "• /dbulk — загрузить список блюд (по одному в строке)\n"
-        "• /dadd Название — добавить блюдо\n"
-        "• /ddel Название — удалить блюдо\n"
-        "• /dlist — сколько блюд в базе\n"
+        "• В группу уходит только запись с ответом кухни\n\n"
+        "Подписка/рассылка:\n"
+        "• /subscribe — подписаться (личка)\n"
+        "• /unsubscribe — отписаться\n"
+        "• /broadcast — админ-рассылка всем подписчикам\n\n"
+        "Утилиты:\n"
+        "• /chatid — узнать chat_id\n"
         "• /whoami — ваш user_id\n"
     )
     await update.message.reply_text(txt)
@@ -332,7 +350,59 @@ async def help_from_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.message.reply_text("Напишите /help — покажу все команды и подсказки.")
 
 
-# ---------- Admin commands (optional) ----------
+# ---------- Free text fallback ----------
+async def on_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # реагируем только в личке
+    if not update.effective_chat or update.effective_chat.type != "private":
+        return
+    await update.message.reply_text(
+        "Похоже, вы написали просто текст 🙂\nХотите создать новую запись ОС?",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("➕ Новая запись", callback_data="new")]]
+        ),
+    )
+
+
+# ---------- Broadcast flow ----------
+async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        return await update.message.reply_text("Недостаточно прав.")
+    await update.message.reply_text("✉️ Пришлите одним сообщением текст рассылки.\n/cancel — отмена.")
+    return BROADCAST
+
+
+async def broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not _is_admin(update):
+        return ConversationHandler.END
+
+    text = (update.message.text or "").strip()
+    if not text:
+        await update.message.reply_text("Текст пустой. Пришлите сообщение ещё раз.")
+        return BROADCAST
+
+    db: DB = context.application.bot_data["db"]
+    try:
+        chat_ids = await db.list_subscribers()
+    except Exception:
+        return await update.message.reply_text("Не могу получить список подписчиков (ошибка БД).")
+
+    sent = 0
+    failed = 0
+
+    for cid in chat_ids:
+        try:
+            await context.bot.send_message(chat_id=int(cid), text=text, disable_web_page_preview=True)
+            sent += 1
+            # лёгкая пауза, чтобы не упереться в лимиты
+            await asyncio.sleep(0.05)
+        except Exception:
+            failed += 1
+
+    await update.message.reply_text(f"✅ Рассылка завершена.\nОтправлено: {sent}\nОшибок: {failed}")
+    return ConversationHandler.END
+
+
+# ---------- Admin dish commands (как было) ----------
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Ваш user_id: {update.effective_user.id}")
 
@@ -399,6 +469,10 @@ async def dbulk_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- Main flow ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _set_auto_date(context)
+
+    # автоподписка для рассылок (личка)
+    await _autoregister_subscriber(update, context)
+
     await _track_user_message(update, context)
     await _send_tracked(
         update,
@@ -412,8 +486,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+
     context.user_data["cleanup_ids"] = []
     _set_auto_date(context)
+
+    # автоподписка (личка)
+    # (callback может прийти только из личной карточки)
+    fake_update = Update(update.update_id, message=q.message)  # лёгкий хак, чтобы переиспользовать функцию
+    await _autoregister_subscriber(fake_update, context)
+
     await _send_tracked(
         update,
         context,
@@ -439,7 +520,7 @@ async def get_dish(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         options = await search_dishes_strict(db, q, limit=10)
-    except Exception as e:
+    except Exception:
         await _send_tracked(
             update,
             context,
@@ -610,7 +691,7 @@ async def save_edited_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Обновляем Google Sheets
     await asyncio.to_thread(sheets.update_feedback_row, fid, date_str, dish, comment, reply)
 
-    # Публикуем/обновляем в группе (теперь уже точно есть ответ кухни)
+    # Публикуем/обновляем в группе
     if reply:
         await _publish_or_update_group(context, db, fid, date_str, dish, comment, reply)
 
@@ -749,9 +830,17 @@ def main():
         allow_reentry=True,
     )
 
+    broadcast_conv = ConversationHandler(
+        entry_points=[CommandHandler("broadcast", broadcast_start)],
+        states={BROADCAST: [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_send)]},
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True,
+    )
+
     app.add_handler(new_conv)
     app.add_handler(edit_conv)
     app.add_handler(bulk_conv)
+    app.add_handler(broadcast_conv)
 
     app.add_handler(CallbackQueryHandler(on_delete_ask, pattern=r"^delask:\d+$"))
     app.add_handler(CallbackQueryHandler(on_delete_confirm, pattern=r"^del:\d+$"))
@@ -759,14 +848,21 @@ def main():
 
     app.add_handler(CallbackQueryHandler(help_from_button, pattern=r"^help$"))
     app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_free_text))
 
     app.add_handler(CommandHandler("chatid", chatid))
-
     app.add_handler(CommandHandler("whoami", whoami))
+
+    # подписка
+    app.add_handler(CommandHandler("subscribe", subscribe))
+    app.add_handler(CommandHandler("unsubscribe", unsubscribe))
+
+    # блюда
     app.add_handler(CommandHandler("dadd", dadd))
     app.add_handler(CommandHandler("ddel", ddel))
     app.add_handler(CommandHandler("dlist", dlist))
+
+    # ВАЖНО: свободный текст — последним, чтобы не ломать диалоги
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_free_text))
 
     app.run_polling(close_loop=False)
 
