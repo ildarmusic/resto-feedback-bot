@@ -59,6 +59,23 @@ class DB:
         rows = await self.pool.fetch(sql, *params)
         return [r["name"] for r in rows]
 
+    async def upsert_subscriber(self, chat_id: int, chat_type: str = "private") -> None:
+        await self.pool.execute(
+            """
+            INSERT INTO subscribers(chat_id, chat_type)
+            VALUES($1, $2)
+            ON CONFLICT (chat_id) DO UPDATE SET chat_type=EXCLUDED.chat_type
+            """,
+            chat_id, chat_type
+        )
+
+    async def remove_subscriber(self, chat_id: int) -> None:
+        await self.pool.execute("DELETE FROM subscribers WHERE chat_id=$1", chat_id)
+
+    async def list_subscribers(self) -> list[int]:
+        rows = await self.pool.fetch("SELECT chat_id FROM subscribers")
+        return [int(r["chat_id"]) for r in rows]
+
     async def upsert_dish(self, name: str):
         assert self.pool
         q = "INSERT INTO dishes(name) VALUES($1) ON CONFLICT (name) DO NOTHING"
@@ -89,3 +106,16 @@ class DB:
     async def update_kitchen_reply(self, feedback_id: int, kitchen_reply: str):
         assert self.pool
         await self.pool.execute("UPDATE feedback SET kitchen_reply=$2 WHERE id=$1", feedback_id, kitchen_reply)
+
+    async def set_group_message_refs(self, fid: int, chat_id: int, message_id: int):
+        await self.pool.execute(
+            "UPDATE feedback SET group_chat_id=$2, group_message_id=$3 WHERE id=$1",
+            fid, chat_id, message_id
+        )
+
+    async def set_group_message_refs(self, fid: int, chat_id: int, message_id: int) -> None:
+        await self.pool.execute(
+            "UPDATE feedback SET group_chat_id=$2, group_message_id=$3 WHERE id=$1",
+            fid, chat_id, message_id
+        )
+
