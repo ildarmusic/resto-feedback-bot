@@ -343,6 +343,32 @@ async def help_from_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.message.reply_text("Напишите /help — покажу все команды и подсказки.")
 
 
+WELCOME_TEXT = (
+    "👋 Привет!\n\n"
+    "Это бот для фиксации обратной связи по блюдам.\n"
+    "Записи сохраняются отправляются в общий чат и сразу сохраняются в Google-таблицу.\n\n"
+    "🤖 Помощь\n\n"
+    "📝 Запись обратной связи:\n"
+    "• /start или /new — начать новую запись\n"
+    "• /skip — пропустить ответ кухни\n"
+    "• /cancel — отменить текущий шаг\n\n"
+    "На карточке:\n"
+    "• ✏️ Ответ кухни — добавить/изменить позже\n"
+    "• ➕ Новая запись — начать следующую\n"
+    "• 🗑 Удалить запись — удалит и в группе тоже (если публиковалось)\n\n"
+    "🍽 Блюда (для админов):\n"
+    "• /dbulk — загрузить список блюд (по одному в строке)\n"
+    "• /dadd Название — добавить блюдо\n"
+    "• /ddel Название — удалить блюдо\n"
+    "• /dlist — сколько блюд в базе\n"
+)
+
+def welcome_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("➕ Новая запись", callback_data="new")]]
+    )
+
+
 # ---------- Free text fallback ----------
 async def on_free_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # реагируем только в личке
@@ -466,6 +492,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # автоподписка для рассылок (личка)
     await _autoregister_subscriber(update, context)
 
+    # первое приветствие
+    if await maybe_send_welcome(update, context):
+        return ConversationHandler.END
+
+    # дальше — обычный старт записи
     await _track_user_message(update, context)
     await _send_tracked(
         update,
@@ -495,6 +526,19 @@ async def start_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         reply_markup=ReplyKeyboardRemove(),
     )
     return DISH
+
+
+async def maybe_send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    # только в личке
+    if not update.effective_chat or update.effective_chat.type != "private":
+        return False
+
+    if context.user_data.get("welcome_shown"):
+        return False
+
+    await update.message.reply_text(WELCOME_TEXT, reply_markup=welcome_keyboard())
+    context.user_data["welcome_shown"] = True
+    return True
 
 
 async def get_dish(update: Update, context: ContextTypes.DEFAULT_TYPE):
